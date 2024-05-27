@@ -1,0 +1,477 @@
+---
+title: "**Growth Mindset on Student Achievements**"
+output: pdf_document
+author: Minh Thu Bui, Vindyani Herath
+header-includes:
+  - \usepackage{colortbl}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo = FALSE,include=FALSE}
+#libraries
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(tidyr))
+suppressPackageStartupMessages(library(ggplot2))
+library(dplyr)
+library(rsample)
+```
+
+```{r, include=FALSE}
+data <- read.csv("synthetic_data.csv")
+names(data) <- c("SchoolID", "Intervention", "Outcome", "StudentExpectation","Race","Gender","FirstGen",
+                 "Urbanicity","FixedMindsets","AchievementLevels","SchoolMinorityPercent","SchoolPovertyPercent","SchoolSize")
+data <- data %>%
+  mutate(across(c("SchoolID", "Intervention", "StudentExpectation","Race","Gender","FirstGen","Urbanicity"), factor))
+
+```
+
+# Exploratory Data Analysis:
+
+```{r}
+print(paste("The number of rows in the dataset is:", dim(data)[1]))
+print(paste("The number of columns in the dataset is:", dim(data)[2]))
+print(paste("The number of students who received the intervention is:", sum(data$Intervention == 1)))
+print(paste("The number of students who did not received the intervention is:", sum(data$Intervention == 0)))
+```
+First, we want to see the distribution of people who received the intervention and who did not in the total dataset.
+```{r, dev = "png"}
+# Plot the number of students who receive intervention and the amount of people that did not.
+ggplot(data, aes(x = Intervention)) + 
+  geom_bar(fill = c("blue", "red"), color = "black", width = 0.5) +
+  labs(x = "Intervention Status", y = "Count", 
+       title = "Distribution of Intervention") +
+  scale_x_discrete(labels = c("No Intervention", "Intervention"))
+```
+Next, we also want to investigate the relationship between the intervention status (whether they received it or not) and the outcome. It seems like the mean of the outcomes is higher and on the positive scale for people who received treatment while the mean is negative for the control group. 
+```{r, dev = "png"}
+ggplot(data, aes(x = Intervention, y = Outcome, fill = Intervention)) +
+  geom_boxplot() +
+  labs(x = "Intervention Status", y = "Outcome", title = "Outcome versus Intervention Status") +
+  scale_fill_manual(values = c("blue", "red")) +
+  theme_minimal()
+```
+We also want to investigate whether the assignment of treatment is randomized or if there was some selection bias to consider in our analysis. First, we visualize to inspect whether students with a higher expectation of success appear to be more likely to receive
+treatment.
+```{r}
+ggplot(data, aes(x = StudentExpectation, fill = Intervention)) +
+  geom_bar(position = "dodge") +
+  labs(x = "Student Expectation of Success", y = "Count",
+       title = "Student Expectation versus Intervention Status") +
+  scale_fill_manual(values = c("blue", "red")) +
+  theme_minimal()
+```
+We also create a contingency table between the binary variable Gender and the binary variable for Intervention. We see that for Gender decoded as 1 (Male) tends to have higher chances of getting the treatment compared to the Gender decoded as 2 (Female).
+```{r}
+table_data <- table(data$Gender, data$Intervention)
+print(table_data)
+mosaicplot(table_data, main="Mosaic Plot of Gender vs. Intervention", xlab="Gender", ylab="Intervention")
+```
+Then, the relationship between being first-generation versus being assigned the treatment shown in the table below. It seems like the randomization does occur here but there could be some sort of selection bias because the number of first-generation students receiving the treatment or not is almost double compared to the number of non-first generation students.
+```{r}
+table_data <- table(data$FirstGen, data$Intervention)
+print(table_data)
+mosaicplot(table_data, main="Mosaic Plot of First Generation vs. Intervention", xlab="First Generation", ylab="Intervention")
+```
+
+```{r}
+#Checking whether school achievement level have a relationship with the intervention and outcome
+#Achievement levels: low, 25th percentile or lower, middle, 25th - 75th percentile; high, 75th percentile or higher
+summary(data$AchievementLevels)
+data$AchievementLevels_Cat <- ifelse(data$AchievementLevels > 0.72684 , "High",
+                                 ifelse(data$AchievementLevels < -0.54451, "Low", "Medium"))
+data$AchievementLevels_Cat <- factor(data$AchievementLevels_Cat, levels = c("Low", "Medium", "High"))
+table(data$AchievementLevels_Cat)
+# library
+#library(ggplot2)
+ 
+# grouped boxplot
+ggplot(data, aes(x=AchievementLevels_Cat, y=Outcome, fill=Intervention)) + 
+    geom_boxplot() +  scale_fill_manual(values = c("blue", "red")) + labs(x = "Achievement Level", y = "Outcome")
+```
+
+This dataset exhibits two methodological challenges. First, although the National Study itself was a randomized study, there seems to be some selection effects in the synthetic data used here. Second, the students in this study are not independently sampled; rather, they are all drawn from 76 randomly selected schools, and there appears to be considerable heterogeneity across schools. Such a situation could arise if there are unobserved school-level features that are important treatment effect modifiers; for example, some schools may have leadership teams who implemented the intervention better than others, or may have a student culture that is more receptive to the treatment [Athey and Wager, 2018].
+
+# Modeling:
+```{r}
+set.seed(1)
+sample <- sample.int(n = nrow(data), size = floor(0.5*nrow(data)), replace = F)
+train <- data[sample, ]
+test  <- data[-sample, ]
+```
+## Outcome Regression Approach:
+```{r}
+compute_OR_ATE <- function(train_data, test_data){
+    model1 <- lm(Outcome ~ Race + Gender + FirstGen + Urbanicity + FixedMindsets + AchievementLevels + SchoolMinorityPercent 
+                           + SchoolPovertyPercent + SchoolSize, data = train_data[train_data$Intervention == 1,])
+    model0 <- lm(Outcome ~ Race + Gender + FirstGen + Urbanicity + FixedMindsets + AchievementLevels + SchoolMinorityPercent 
+                           + SchoolPovertyPercent + SchoolSize, data = train_data[train_data$Intervention == 0,])
+    
+    mu1 <- mean(as.matrix(predict(model1, newdata = test_data, type = "response")))
+    mu0 <- mean(as.matrix(predict(model0, newdata = test_data, type = "response")))
+    
+    return(mu1 - mu0)
+}
+compute_OR_ATE(train, test)
+```
+## Propensity Score Approach:
+```{r}
+ate_OR <- function(train_data, test_data) {
+    propensity_model <- glm(formula = Intervention ~ StudentExpectation + Race + Gender + FirstGen + Urbanicity + FixedMindsets + AchievementLevels + SchoolMinorityPercent + SchoolPovertyPercent + SchoolSize, family = binomial(link = "logit"), data = train_data)
+    train_data$propensity_score <- predict(propensity_model, type = "response")
+    
+    propensity_treatment <- lm(Outcome ~ Race + Gender + FirstGen + Urbanicity + FixedMindsets + AchievementLevels + SchoolMinorityPercent 
+                           + SchoolPovertyPercent + SchoolSize, data = train_data[train_data$Intervention == 1,])
+    propensity_control <- lm(Outcome ~ Race + Gender + FirstGen + Urbanicity + FixedMindsets + AchievementLevels + SchoolMinorityPercent 
+                            + SchoolPovertyPercent + SchoolSize, data = train_data[train_data$Intervention == 0,])
+    test_data$propensity_score <- predict(propensity_model, newdata = test_data, type = "response")
+    mu1 <- mean(as.matrix(predict(propensity_treatment, newdata = test_data)))
+    mu0 <- mean(as.matrix(predict(propensity_control, newdata = test_data)))
+    ATE_x = mu1 - mu0
+    return(ATE_x)
+}
+ate_OR(train,test)
+  
+n_bootstrap <- 1000
+# Bootstrap procedure
+set.seed(123)
+bootstrap <- function(train_data, test_data, n_bootstrap = 1000){
+  results <- numeric(n_bootstrap)
+  for (i in 1:n_bootstrap){
+    bootstrap_sample <- train_data[sample(nrow(train_data), replace = TRUE), ]
+    results[i] <- ate_OR(bootstrap_sample, test_data)
+  }
+  return(results)
+}
+  
+bootstrap_results <- bootstrap(train, test, n_bootstrap)  
+#Standard Error 
+OR_SE <- sd(bootstrap_results)
+OR_SE
+
+# Compute confidence intervals
+confidence_interval <- quantile(bootstrap_results, c(0.025, 0.975))
+confidence_interval
+
+cat("Estimated ATE:", ate_OR(train,test), "\n", "95% Confidence Interval:", confidence_interval, "\n",
+    "Standard Error:", OR_SE)
+
+
+```
+
+```{r}
+#Propensity Score
+compute_propensity <- function(train_data, test_data){
+    ps_model <- glm(formula = Intervention ~ StudentExpectation + Race + Gender 
+                    + FirstGen + Urbanicity + FixedMindsets + AchievementLevels +
+                      SchoolMinorityPercent + SchoolPovertyPercent + SchoolSize, 
+                    family = binomial(link = "logit"), data = train_data)
+
+  #train_data$ps <- predict(ps_model, new_data = train_data, type = "response")
+  test_data$ps <- predict(ps_model, newdata = test_data, type = "response")
+return(test_data$ps)
+}
+
+test$ps <- compute_propensity(train,test)
+# grouped boxplot
+ggplot(test, aes(x=StudentExpectation, y=ps)) + 
+  geom_boxplot(fill = "cyan") +
+  labs(x = "Student Expectation of Success", y = "Propensity Score")
+```
+
+
+
+## Inverse Weighting Approach:
+```{r}
+# IPW estimator
+test$Intervention <- as.numeric(test$Intervention)
+compute_IPW_ATE <- function(train_data, test_data){
+  ps_model <-  glm(formula = Intervention ~ StudentExpectation + Race + Gender 
+                    + FirstGen + Urbanicity + FixedMindsets + AchievementLevels +
+                      SchoolMinorityPercent + SchoolPovertyPercent + SchoolSize, 
+                    family = binomial(link = "logit"), data = train_data)
+    
+  test_data$ps <- predict(ps_model, newdata = test_data, type = "response")
+  m1_ipw <- mean((test_data$Intervention/ test_data$ps) * test_data$Outcome)
+  m0_ipw <- mean(((1 - test_data$Intervention)/(1 - test_data$ps))*test_data$Outcome)
+  return(m1_ipw - m0_ipw)
+}
+
+compute_IPW_ATE(train,test)
+
+set.seed(123)
+bootstrap_ipw <- function(train_data, test_data, n_bootstrap = 5000){
+  results <- numeric(n_bootstrap)
+  for (i in 1:n_bootstrap){
+    bootstrap_sample <- train_data[sample(nrow(train_data), replace = TRUE), ]
+    results[i] <- compute_IPW_ATE(bootstrap_sample, test_data)
+  }
+  return(results)
+}
+
+bootstrap_results_ipw <- bootstrap_ipw(train, test, n_bootstrap)  
+IPW_SE <- sd(bootstrap_results_ipw)
+IPW_SE
+
+#Confidence Intervals
+IPW_CI <- quantile(bootstrap_results_ipw, c(0.025, 0.975))
+IPW_CI
+```
+
+
+## Doubly Robust Estimation:
+
+```{r}
+# DR estimator
+test$Intervention <- as.numeric(test$Intervention)
+compute_DR_ATE <- function(train_data, test_data){
+ ps_model <-  glm(formula = Intervention ~ StudentExpectation + Race + Gender 
+                    + FirstGen + Urbanicity + FixedMindsets + AchievementLevels +
+                      SchoolMinorityPercent + SchoolPovertyPercent + SchoolSize, 
+                    family = binomial(link = "logit"), data = train_data)
+  model1 <- lm(Outcome ~ Race + Gender + FirstGen + Urbanicity + FixedMindsets + AchievementLevels + SchoolMinorityPercent 
+                           + SchoolPovertyPercent + SchoolSize, data = train_data[train_data$Intervention == 1,])
+  model0 <- lm(Outcome ~ Race + Gender + FirstGen + Urbanicity + FixedMindsets + AchievementLevels + SchoolMinorityPercent 
+                           + SchoolPovertyPercent + SchoolSize, data = train_data[train_data$Intervention == 0,])
+    
+    mu1 <- predict(model1, newdata = test_data, type = "response")
+    mu0 <- predict(model0, newdata = test_data, type = "response")
+    OR_est <- mean(mu1 - mu0) 
+
+  test_data$ps <- predict(ps_model, newdata = test_data, type = "response")
+  M1 <- mean(test_data$Intervention*(test_data$Outcome - mu1)/test_data$ps)
+ M2 <- mean(((1 - test_data$Intervention)* (test_data$Outcome - mu0))/(1 - test_data$ps))
+return(OR_est+ M1 - M2)
+}
+DR_ATE <- compute_DR_ATE(train, test)
+DR_ATE
+
+bootstrap_dr <- function(train_data, test_data, n_bootstrap = 1000){
+  results <- numeric(n_bootstrap)
+  for (i in 1:n_bootstrap){
+    bootstrap_sample <- train_data[sample(nrow(train_data), replace = TRUE), ]
+    results[i] <- compute_DR_ATE(bootstrap_sample, test_data)
+  }
+  return(results)
+}
+set.seed(123)
+bootstrap_results_dr <- bootstrap_dr(train, test, n_bootstrap)  
+DR_SE <- sd(bootstrap_results_dr)
+DR_SE
+
+#Confidence Intervals
+DR_CI <- quantile(bootstrap_results_dr, c(0.025, 0.975))
+DR_CI
+```
+
+## Hajek Estimator:
+```{r}
+hajek_func <- function(data1, data2) {
+  hajek_model <- glm(formula = Intervention ~ StudentExpectation + Race + Gender 
+                    + FirstGen + Urbanicity + FixedMindsets + AchievementLevels +
+                      SchoolMinorityPercent + SchoolPovertyPercent + SchoolSize, 
+                    family = binomial(link = "logit"), data = data1)
+  data1$hajek <- predict(hajek_model, type = "response")
+  data2$hajek <- predict(hajek_model, newdata = data2, type = "response")
+  mu1_hajek <- mean((data2$Intervention/ data2$hajek)/mean((data2$Intervention/ data2$hajek)) * data2$Outcome)
+  mu0_hajek <- mean(( (1 - data2$Intervention)/ (1-data2$hajek))/mean((1 - data2$Intervention)/ (1-data2$hajek)) * data2$Outcome)
+  ATE_x_hajek = mu1_hajek - mu0_hajek
+  return(ATE_x_hajek)
+}
+ATE_x_hajek <- hajek_func(train, test)
+print(paste("ATE for Hajek estimator is:", ATE_x_hajek))
+
+suppressWarnings (bootstrap_hajek <- replicate(n_bootstrap , {sample_boot <- train[sample(nrow(train), replace = TRUE), ]
+                    hajek_func(sample_boot, test)}))
+hajek_ci <- quantile(bootstrap_hajek, c(0.025, 0.975))
+hajek_ci
+hajek_se <- sd(bootstrap_hajek)
+print(paste("Standard errors for Hajek estimator is:",hajek_se))
+```
+
+# Sensitivity Analysis
+
+```{r}
+eta0 <- c(1/2, 1/1.7, 1/1.5, 1/1.3, 1, 1.3, 1.5, 1.7, 2)
+eta1 <- c(1/2, 1/1.7, 1/1.5, 1/1.3, 1, 1.3, 1.5, 1.7, 2)
+ATE_calculation <- function(train_data, test_data, mu1, mu0, eta0_val, eta1_val) {
+  test_data$Intervention <- as.numeric(test_data$Intervention)
+  treatment <- mean(test_data$Intervention * mu1 + (1 - test_data$Intervention)*(mu1/eta1_val))
+  control <- mean(test_data$Intervention * mu0 * eta0_val + (1 - test_data$Intervention)*mu0)
+  ATE_val <- treatment - control
+  return(ATE_val)
+}
+
+sensitivity_analysis_ATE <- function(train_data, test_data, eta0_val, eta1_val){
+  model1 <- glm(Outcome ~ Race + Gender + FirstGen + Urbanicity + FixedMindsets + AchievementLevels + SchoolMinorityPercent 
+               + SchoolPovertyPercent + SchoolSize, family = gaussian, data = train_data[train_data$Intervention == 1,])
+  model0 <- glm(Outcome ~ Race + Gender + FirstGen + Urbanicity + FixedMindsets + AchievementLevels + SchoolMinorityPercent 
+               + SchoolPovertyPercent + SchoolSize, family = gaussian, data = train_data[train_data$Intervention == 0,])
+  mu1_sen <- mean(as.matrix(predict(model1, newdata = test_data, type = "response")))
+  mu0_sen <- mean(as.matrix(predict(model0, newdata = test_data, type = "response")))
+  ATE_vals <- matrix(NA, length(eta0_val), length(eta1_val), dimnames = list(eta0_val, eta1_val))
+  
+  
+  for (i in 1:length(eta0)) {
+    for (j in 1:length(eta1)) {
+      ATE_vals[i, j] <- ATE_calculation(train_data, test_data, mu1_sen, mu0_sen, eta0_val[i], eta1_val[j])
+    }
+  }
+  return(ATE_vals) 
+}
+suppressWarnings(ATE_values <- sensitivity_analysis_ATE(train, test, eta0, eta1))
+#View(ATE_values)
+```
+
+```{r}
+n_bootstrap <- 1000
+eta0_str <- as.character(eta0)
+eta1_str <- as.character(eta1)
+
+bootstrap_results <- array(dim = c(length(eta0), length(eta1), n_bootstrap),
+                           dimnames = list(eta0_val = eta0_str, eta1_val = eta1_str, Sample = NULL))
+set.seed(123)
+suppressWarnings(for (b in 1:n_bootstrap) {
+  sample_boot <- train[sample(nrow(train), replace = TRUE), ]
+  ATE_vals_boot <- sensitivity_analysis_ATE(sample_boot, test, eta0, eta1)
+  bootstrap_results[,,b] <- ATE_vals_boot
+})
+se_matrix <- apply(bootstrap_results, c(1, 2), sd)
+#View(se_matrix)
+
+library(knitr)
+library(kableExtra)
+
+kable(ATE_values, caption = "ATE estimates") %>%
+  kable_styling(bootstrap_options = c("striped", "scale_down"))
+
+kable(se_matrix, caption = "Bootstrapped Standard Errors") %>%
+  kable_styling(bootstrap_options = c("striped", "scale_down"))
+```
+
+# Causal Forests:
+From our dataset, notice that all of the observations are pooled from uneven clusters based on school ID. Thus, this will change our inferential approach as in finding an optimal way to quantify the causal effects accurately given the information. From the paper, for example, in our setting, do we want to fit a model that accurately reflects heterogeneity in our available sample of $J = 76$ schools, or a model that will generalize to students from other schools also? Should we give more weight in our analysis to schools from which we observe more students? The approach they choose in the paper is to assume that we want a predictive model that generalizes to more than $J$ schools with equal weights to any new school added to the dataset. In other words, we want a predictive model that can predict the causal effect when we add a new observation from a new school to the data.
+
+```{r}
+library(grf)
+```
+
+```{r}
+data = read.csv("synthetic_data.csv")
+data$schoolid = factor(data$schoolid)
+
+names(data) <- c("SchoolID", "Intervention", "Outcome", "StudentExpectation","Race","Gender","FirstGen",
+                 "Urbanicity","FixedMindsets","AchievementLevels","SchoolMinorityPercent","SchoolPovertyPercent","SchoolSize")
+
+DF = data[,-1]
+school.id = as.numeric(data$SchoolID)
+
+school.mat = model.matrix(~ SchoolID + 0, data = data)
+school.size = colSums(school.mat)
+
+# It appears that school ID does not affect pscore. So ignore it in modeling, and just treat it as source of per-cluster error.
+w.lm = glm(Intervention ~ ., data = data[,-3], family = binomial)
+summary(w.lm)
+
+W = DF$Intervention
+Y = DF$Outcome
+X.raw = DF[,-(1:2)]
+
+Race.exp = model.matrix(~ factor(X.raw$Race) + 0)
+Urbancity.exp = model.matrix(~ factor(X.raw$Urbanicity) + 0)
+
+X = cbind(X.raw[,-which(names(X.raw) %in% c("Race", "Urbancity"))], Race.exp, Urbancity.exp)
+
+#
+# Grow a forest. Add extra trees for the causal forest.
+# Y: outcome (Outcome), W: treatment (Intervention)
+
+Y.forest = regression_forest(X, Y, clusters = school.id, equalize.cluster.weights = TRUE)
+Y.hat = predict(Y.forest)$predictions
+W.forest = regression_forest(X, W, clusters = school.id, equalize.cluster.weights = TRUE)
+W.hat = predict(W.forest)$predictions
+
+cf.raw = causal_forest(X, Y, W,
+                       Y.hat = Y.hat, W.hat = W.hat,
+                       clusters = school.id,
+                       equalize.cluster.weights = TRUE)
+varimp = variable_importance(cf.raw)
+selected.idx = which(varimp > mean(varimp))
+varimp
+cf = causal_forest(X[,selected.idx], Y, W,
+                   Y.hat = Y.hat, W.hat = W.hat,
+                   clusters = school.id,
+                   equalize.cluster.weights = TRUE,
+                   tune.parameters = "all")
+```
+
+```{r}
+# Tau is average treatment effect
+tau.hat = predict(cf)$predictions
+#
+# Estimate ATE
+#
+ATE = average_treatment_effect(cf)
+ATE
+paste("95% CI for the ATE:", round(ATE[1], 3),
+      "+/-", round(qnorm(0.975) * ATE[2], 3))
+print(paste("Confidence interval for ATE is (0.208, 0.286)"))
+test_calibration(cf)
+```
+
+```{r}
+#
+# Look at variation in propensity scores
+#
+
+DF = X
+DF$W.hat = cf$W.hat
+
+pdf("pscore.pdf")
+pardef = par(mar = c(5, 4, 4, 2) + 0.5, cex.lab=1.5, cex.axis=1.5, cex.main=1.5, cex.sub=1.5)
+boxplot(W.hat ~ StudentExpectation, data = DF, ylab = "Propensity Score", xlab = "Student Expectation of Success")
+lines(smooth.spline(X$StudentExpectation, cf$W.hat), lwd = 2, col = 4)
+dev.off()
+```
+
+```{r}
+boxplot(W.hat ~ StudentExpectation, data = DF, ylab = "Propensity Score", xlab = "Student Expectation of Success")
+lines(smooth.spline(X$StudentExpectation, cf$W.hat), lwd = 2, col = 4)
+```
+
+```{r}
+#
+# Make some plots...
+#
+
+pdf("tauhat_hist.pdf")
+pardef = par(mar = c(5, 4, 4, 2) + 0.5, cex.lab=1.5, cex.axis=1.5, cex.main=1.5, cex.sub=1.5)
+hist(tau.hat, xlab = "estimated CATE", main = "")
+dev.off()
+```
+## Causal Forest non-clustering-robustness:
+```{r}
+#
+# Analysis ignoring clusters
+#
+
+cf.noclust = causal_forest(X[,selected.idx], Y, W,
+                           Y.hat = Y.hat, W.hat = W.hat,
+                           tune.parameters = "all")
+
+ATE.noclust = average_treatment_effect(cf.noclust)
+ATE.noclust
+paste("95% CI for the ATE:", round(ATE.noclust[1], 3),
+      "+/-", round(qnorm(0.975) * ATE.noclust[2], 3))
+
+test_calibration(cf.noclust)
+```
+
+```{r}
+# Comparing the test_calibration
+test_calibration(cf)
+test_calibration(cf.noclust)
+```
+
